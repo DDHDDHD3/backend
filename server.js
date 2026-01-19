@@ -59,6 +59,8 @@ function authenticateToken(req, res, next) {
     });
 }
 
+
+
 // Initialize Database
 async function initializeDatabase() {
     try {
@@ -134,7 +136,7 @@ async function initializeDatabase() {
         // Seed Admin User
         const userCount = await pool.query('SELECT COUNT(*) FROM users');
         if (parseInt(userCount.rows[0].count) === 0) {
-            const hashedPassword = await bcrypt.hash('admin_secure_password', 10);
+            const hashedPassword = await bcrypt.hash('admin123', 10);
             await pool.query('INSERT INTO users (username, password) VALUES ($1, $2)', ['admin', hashedPassword]);
             console.log('Admin user seeded.');
         }
@@ -215,12 +217,17 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-        console.log(`Login success: ${username}`);
-        const token = jwt.sign({ id: user.id, username: user.username }, SECRET_KEY, { expiresIn: '10m' });
-        res.json({ token, username: user.username });
+        console.log(`Login success: ${username} (Role: ${user.role || 'editor'})`);
+        const token = jwt.sign(
+            { id: user.id, username: user.username, role: user.role || 'editor' },
+            SECRET_KEY,
+            { expiresIn: '10m' }
+        );
+        console.log(`Generated token for ${username}`);
+        res.status(200).json({ token, username: user.username, role: user.role || 'editor' });
     } catch (err) {
-        console.error('Login error:', err);
-        res.status(500).json({ message: 'Server error' });
+        console.error('Login error in server:', err);
+        res.status(500).json({ message: 'Server error', details: err.message });
     }
 });
 // Profile
@@ -384,17 +391,48 @@ app.delete('/api/messages/:id', authenticateToken, async (req, res) => {
     }
 });
 
+// Serve static files from the dist folder
+// We check multiple locations to support both Docker and local development
+const distPath = path.join(__dirname, '../dist');
+app.use(express.static(distPath));
+app.use(express.static('/dist'));
+
 app.get('/health', (req, res) => {
     console.log('Health check requested');
     res.send({ status: 'UP', timestamp: new Date() });
 });
 
-// Catch-all 404
+// Root route - Serve frontend if available, otherwise show status
+app.get('/', (req, res) => {
+    const localIndex = path.join(distPath, 'index.html');
+    const dockerIndex = '/dist/index.html';
+
+    if (require('fs').existsSync(dockerIndex)) {
+        res.sendFile(dockerIndex);
+    } else if (require('fs').existsSync(localIndex)) {
+        res.sendFile(localIndex);
+    } else {
+        res.json({
+            message: 'Backend is running successfully!',
+            status: 'Online',
+            api_routes: '/api/auth, /api/projects, /api/profile, /api/messages'
+        });
+    }
+});
+
+// Catch-all route for SPA (redirect to index.html for unknown text/html requests)
+app.get('*', (req, res, next) => {
+    if (req.accepts('html')) {
+        const dockerIndex = '/dist/index.html';
+        const localIndex = path.join(distPath, 'index.html');
+        if (require('fs').existsSync(dockerIndex)) return res.sendFile(dockerIndex);
+        if (require('fs').existsSync(localIndex)) return res.sendFile(localIndex);
+    }
+    next();
+});
+
+// Catch-all 404 for API or missing files
 app.use((req, res) => {
     console.log(`404 - Not Found: ${req.method} ${req.url}`);
     res.status(404).json({ message: 'Route not found' });
 });
-
-// app.listen(PORT, '0.0.0.0', () => {
-//     console.log(`Server running on port ${PORT}`);
-// });
